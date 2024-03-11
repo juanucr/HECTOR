@@ -26,7 +26,36 @@ def readerh5(file):
 #%%
 class DAS:
     
-    def __init__(self, file, dx, gl, fname, file_format):
+    def __init__(self, file, dx, gl, fname, file_format, duration=None):
+        '''
+        This method describes a DAS object. The input parameters are described here
+
+        Parameters
+        ----------
+        file : string
+            It is the file path + the file name, so the DAS class can read the file wherever is located.
+        dx : integer or float
+            It is the channel (or traces) separation in meters.
+        gl : integer or float
+            Corresponds to the Gauge Length in meters.
+        fname : string
+            The input file name.
+        file_format : string
+            Currently there are four accepted file formats:
+                1.'segy'
+                2. 'tdms'
+                3. 'npy' (is a numpy array as input)
+                5. 'h5'
+        duration : integer or float
+            It corresponds to the time duration of your file (in seconds).
+            In the case of 'h5' or 'npy' formats, this parameter has to be specified, otherwise an error will be raised.
+            For 'segy' or 'tdms' formats this parameter is not needed.
+                        
+        Returns
+        -------
+        A DAS object.
+
+        '''
        
         print('Reading : ' + file)
         
@@ -62,8 +91,9 @@ class DAS:
             traces = readerh5(file)
             self.ntrs, self.npts = traces.shape
             
-            print('Insert the time duration of your h5 file (in seconds): ')
-            duration = float(input())
+            if duration is None:
+                raise Exception('the duration parameter has to be specified in the case of h5 type files')
+                      
             self.dt = duration / self.npts
             self.sampling_rate = 1/self.dt
             self.fname = fname
@@ -73,8 +103,10 @@ class DAS:
             from obspy import UTCDateTime
             traces = np.load(file)
             self.ntrs, self.npts = traces.shape
-            print('Insert the time duration of your numpy file (in seconds): ')
-            duration = float(input())
+            
+            if duration is None:
+                raise Exception('the duration parameter has to be specified in the case of npy type files')
+
             self.dt = duration / self.npts
             self.sampling_rate = 1/self.dt
             self.tax = np.arange(0, traces.shape[0], self.dt)
@@ -125,6 +157,48 @@ class DAS:
         
 
     def denoise(self, data, ftype=None, fmin=None, fmax=None, sampling_rate_new=None, k0=False, low_vel_events=False, order=4):
+        '''
+        
+
+        Parameters
+        ----------
+        data : numpy array
+            corresponds to your DAS-object-name.traces
+        
+        ftype : string, optional
+        
+            Currently 3 types of Butterworth frequency filters are available:
+                1. 'bandpass' -> need to specify fmin and fmax
+                2. 'Highpass' -> need to specify fmin
+                3. 'Lowpass' -> need to specify fmax
+                
+                If no filter type is specificed, then no frequency filtering is performed. The default is None.
+        
+        fmin : Integer or float, optional
+            Min cut-off frequency. The default is None.
+        
+        fmax : Integer or float, optional
+            Max cut-off frequency. The default is None.
+        
+        sampling_rate_new : Integer of float, optional
+            Is the new sampling rate of your DAS object. The default is None.
+        
+        k0 : boolean optional
+            This parameter attenuates in the FK domain linear events parallel to the fiber cable and mapped in the FK domain along the k0.
+            The default is False.
+        
+        low_vel_events : TYPE, optional
+            DESCRIPTION. The default is False.
+        
+        order : Integer, optional
+            buttterworth-filter order. The default is 4.
+
+        Returns
+        -------
+        the same DAS-object-name.traces with the denoising parameters.
+        Warning, This operation is performed inplace (your current object.traces is overwritten).
+
+        '''
         
         if sampling_rate_new is not None:
             
@@ -156,7 +230,25 @@ class DAS:
 
         
     def data_select(self, starttime=None, endtime=None, startlength=None, endlength=None):
-        
+        '''
+        This methods selects a subset of the DAS object. You can choose a time window and and a spatial segment.
+
+        Parameters
+        ----------
+        starttime : A UTC-based datetime object, optional
+            If it is None, the current startitme is used. The default is None.
+        endtime : A UTC-based datetime object, optional
+            If it is None, the current endtime is used. The default is None.
+        startlength : Integer or float, optional
+            Initial length in meters. If it is None, this parameter is equal to 0. The default is None.
+        endlength : Integer or float, optional
+            Final length in meters. If it is None, this parameter is equal to the last channel. The default is None.
+
+        Returns
+        -------
+        The selected subset of the data. Be aware that this operation is performed inplace.
+
+        '''
         if starttime is not None:
             i_starttime = int(starttime/self.dt)
         else:
@@ -191,18 +283,38 @@ class DAS:
         return data
     
         
-    def visualization(self, data, filename, path_results='./report/', savefig=False):
+    def visualization(self, path_results='./report/', savefig=False, fig_format='png'):
+        '''
+        This method creates a matplotlib figure of the DAS object.
+
+        Parameters
+        ----------
+        path_results : String, optional
+            Path where to store the results. The default is './report/'.
+        savefig : Boolean, optional
+            The default is False.
+        fig_format : String, optional
+            Format in which to save the figure. The default is png.
+
+        Returns
+        -------
+        A matplotlib figure of the DAS object.
+
+        '''
         time = np.arange(self.npts)*self.dt
         depth = np.arange(self.ntrs)*self.dx
-        plt.figure(figsize=[20,5])
-        plt.imshow(data,extent=[min(time),max(time),max(depth),min(depth)],cmap='seismic',aspect='auto')
+        plt.figure(figsize=[10,5])
+        plt.imshow(self.traces,
+                   extent=[min(time), max(time), max(depth), min(depth)],
+                   cmap='seismic',
+                   aspect='auto')
+        
         plt.ylabel('Distance along the fiber [m]')
         plt.xlabel('Relative time [s]')
         plt.tight_layout()
         
         if savefig is not False:
-            plt.savefig(path_results + self.fname + '_imshow' + '.eps', dpi=300)
-            plt.savefig(path_results + self.fname + '_imshow' + '.png', dpi=300)
+            plt.savefig(path_results + self.fname + '_imshow.' + fig_format, dpi=300)
         
    
     def __fk_filt(self, data, k0=False, low_vel_events=False): # Adapted to the 2019 FORGE dataset
@@ -239,7 +351,24 @@ class DAS:
         return data_filt
         
             
-    def plotfk(self, path_results='./report/', savefig=False):
+    def plotfk(self, path_results='./report/', savefig=False, fig_format='png'):
+        '''
+        This method creates a Frequency-Wavenumber plot of the DAS object.
+
+        Parameters
+        ----------
+        path_results : String, optional
+            Path where to store the results. The default is './report/'.
+        savefig : Boolean, optional
+            Set it to True if you want to save the figure. The default is False.
+        fig_format : String, optional
+            Format in which to save the figure. The default is png.
+
+        Returns
+        -------
+        A Frequency-Wavenumber plot of the DAS object.
+
+        '''
         from matplotlib import colors
         f = np.fft.rfftfreq(self.npts, d=self.dt)
         k = np.fft.fftfreq(self.ntrs, d=self.dx)
@@ -263,10 +392,9 @@ class DAS:
         plt.yticks(fontsize=12)
         plt.tight_layout()
         
-        if savefig is not False:
-            plt.savefig(path_results + self.fname + '_FK' + '.eps', dpi=300)
-            plt.savefig(path_results + self.fname + '_FK' + '.png', dpi=300)
-
+        if savefig is True:
+            plt.savefig(path_results + self.fname + '_FK.' + fig_format, dpi=300)
+            
                 
     def analytic_signal(self,traces):
         tracef=np.fft.fft(traces)
@@ -276,24 +404,46 @@ class DAS:
         traces=traces+1j*np.fft.ifft(traceh).real
         self.envelope=np.abs(traces)
 
-    def stalta(self,traces):
+    # def stalta(self, traces):
+    #     tsta = .01
+    #     tlta = tsta*10
+    #     nsta = int(tsta/self.dt)
+    #     nlta = int(tlta/self.dt)
+    #     ks = self.dt/tsta
+    #     kl = self.dt/tlta
+    #     sta0 = np.mean(traces[:,nlta:nlta+nsta]**2, axis=1)
+    #     lta0 = np.mean(traces[:,0:nlta]**2, axis=1)
+    #     stalta = np.zeros(np.shape(traces))
+    #     for i in range(nlta+nsta,self.npts):
+    #         sta0 = ks*traces[:,i]**2+((1.-ks)*sta0)
+    #         lta0 = kl*traces[:,i-nsta]**2+((1.-kl)*lta0)
+    #         stalta[:,i] = sta0/lta0
+    #     stalta[:,0:nlta+nsta] = stalta[:,nlta+nsta:2*(nlta+nsta)]
+    #     stalta = self.__trace_normalization(stalta)
+    #     self.traces = stalta
+        
+    #     self.ntrs,self.npts = stalta.shape
+    #     return stalta
+    
+    def stalta(self, traces):
         tsta = .01
         tlta = tsta*10
-        nsta=int(tsta/self.dt)
-        nlta=int(tlta/self.dt)
-        ks=self.dt/tsta
-        kl=self.dt/tlta
-        sta0=np.mean(traces[:,nlta:nlta+nsta]**2, axis=1)
-        lta0=np.mean(traces[:,0:nlta]**2, axis=1)
-        stalta=np.zeros(np.shape(traces))
+        nsta = int(tsta/self.dt)
+        nlta = int(tlta/self.dt)
+        ks = self.dt/tsta
+        kl = self.dt/tlta
+        sta0 = np.mean(traces[:,nlta:nlta+nsta]**2, axis=1)
+        lta0 = np.mean(traces[:,0:nlta]**2, axis=1)
+        stalta = np.zeros(np.shape(traces))
         for i in range(nlta+nsta,self.npts):
-            sta0=ks*traces[:,i]**2+((1.-ks)*sta0)
-            lta0=kl*traces[:,i-nsta]**2+((1.-kl)*lta0)
-            stalta[:,i]=sta0/lta0
-        stalta[:,0:nlta+nsta]=stalta[:,nlta+nsta:2*(nlta+nsta)]
-        stalta=self.__trace_normalization(stalta)
-        self.traces=stalta
+            sta0 = ks*traces[:,i]**2+((1.-ks)*sta0)
+            lta0 = kl*traces[:,i-nsta]**2+((1.-kl)*lta0)
+            stalta[:,i] = sta0/lta0
+        stalta[:,0:nlta+nsta] = stalta[:,nlta+nsta:2*(nlta+nsta)]
+        stalta = self.__trace_normalization(stalta)
+        self.traces = stalta
         
         self.ntrs,self.npts = stalta.shape
         return stalta
-
+    
+    

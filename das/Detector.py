@@ -9,7 +9,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import DAS as DAS
-from numba import jit
+from numba import jit, njit, prange
 
 
 ## COMPILED FUNCTIONS ##
@@ -21,35 +21,68 @@ def sample_select(ns_window, data, dat_win, y, a, b, c, d_static):
     
     # selection of samples
     for k in range(data.shape[0]):
-        i_hyp = x[k]
-        i_hyp = int(i_hyp)
-
-        if i_hyp < ns_window//2:
-            dat_win[k,:] = 0.
-                        
-        elif i_hyp + ns_window//2 < data.shape[1]:
+        i_hyp = int(x[k])
+        
+        try:
             dat_win[k,:] = data[k,i_hyp-ns_window//2:i_hyp+ns_window//2]
-
-        else:
+        except:
             dat_win[k,:] = 0.
 
     return dat_win
 
 
-@jit(nopython=True)
-def semblance_func(arr):
-    ntr = arr.shape[0]
-    num, den = np.sum(np.square(np.sum(arr, axis=0))), np.sum(arr**2) * ntr
-    return 1e-16 if den==0. else num/den
 
+# def x_search(arr, d_vector, sem, sem2, sem_matrix, b_vector, c_vector, ns_window, dat_win, y, a, d_static, svd=False):
+#     for d in np.ndenumerate(d_vector):
+            
+#         #print(int(np.round(100*d[1]/(d_vector.max()), decimals=1)), '%')
+        
+#         sem, sem2 = b_c_iter(arr, sem, sem2, b_vector, c_vector, ns_window, dat_win, y, a, d[1], svd=False)
+                
+#         sem2 = sem2/sem2.max() # normalized between 0 and 1 to scale sem matrix
+    
+    
+#         if svd==False:
+#             sem_matrix = np.dstack((sem_matrix, sem))
+#         else:
+#             sem_matrix = np.dstack((sem_matrix, sem*sem2))
+
+#     return sem_matrix
 
 #############################################################################
 
 class Detector(DAS.DAS):
-    def __init__(self,file, dx, gl, fname, file_format):
-        DAS.DAS.__init__(self,file, dx, gl, fname, file_format)
-    
-    
+    def __init__(self,file, dx, gl, fname, file_format, duration):
+        '''
+        This method describes a DAS object. The input parameters are described here
+
+        Parameters
+        ----------
+        file : string
+            It is the file path + the file name, so the DAS class can read the file wherever is located.
+        dx : integer or float
+            It is the channel (or traces) separation in meters.
+        gl : integer or float
+            Corresponds to the Gauge Length in meters.
+        fname : string
+            The input file name.
+        file_format : string
+            Currently there are four accepted file formats:
+                1.'segy'
+                2. 'tdms'
+                3. 'npy' (is a numpy array as input)
+                5. 'h5'
+        duration : integer or float
+            It corresponds to the time duration of your file (in seconds).
+            In the case of 'h5' or 'npy' formats, this parameter has to be specified, otherwise an error will be raised.
+            For 'segy' or 'tdms' formats this parameter is not needed.
+                        
+        Returns
+        -------
+        A DAS object.
+        '''
+        DAS.DAS.__init__(self,file, dx, gl, fname, file_format, duration)
+        
     
     def __svd(self, arr): # Tried to compile this function but doesn't get faster
         '''
@@ -67,15 +100,21 @@ class Detector(DAS.DAS):
         
             return 0. if op==0. else s_n
     
+    def __semblance_func(self, arr):
+        ntr = arr.shape[0]
+        num, den = np.sum(np.square(np.sum(arr, axis=0))), np.sum(arr**2) * ntr
+        return 1e-16 if den==0. else num/den
+    
    
-    def hyperbolae_tuning(self, a, b, d, c_min, c_max, c_step, path_results='./report/', savefig=False):
+    
+    def hyperbolae_tuning(self, a, b, d, c_min, c_max, c_step, path_results='./report/', savefig=False, fig_format='png'):
         '''
         
 
         Parameters
         ----------
         a : Int or float
-            smaller this number --> the flatter the hyperbola vertex is.
+            smaller this number --> the wider the hyperbola vertex is.
         b : Int or float
             position along the sample axis.
         d : Int or float
@@ -86,10 +125,12 @@ class Detector(DAS.DAS):
             Range of curvatures. The bigger the number --> the smaller the curvature is.
         c_step : Int or float
             Step between cmin and cmax. Can be a float to have more density of hyperbolas.
-        path_results : TYPE, optional
-            DESCRIPTION. The default is './report/'.
-        savefig : TYPE, optional
-            DESCRIPTION. The default is False.
+        path_results : String, optional
+            Path where to store the results. The default is './report/'.
+        savefig : Boolean, optional
+            Set it to True if you want to save the figure. The default is False.
+        fig_format : String, optional
+            Format in which to save the figure. The default is png.
 
         Returns
         -------
@@ -119,12 +160,45 @@ class Detector(DAS.DAS):
 
         fig.tight_layout()
         
-        if savefig is not False:
-            plt.savefig(path_results + self.fname + '_hyperbola_tuning.eps', dpi=300)
-            plt.savefig(path_results + self.fname + '_hyperbola_tuning.png', dpi=300)
-
+        if savefig is True:
+            plt.savefig(path_results + self.fname + '_hyperbola_tuning.' + fig_format, dpi=300)
+                        
+    
+    def b_c_iter(self, sem, sem2, b_vector, c_vector, ns_window, dat_win, y, a, d_static, svd=False):
+        print('Scanning waveform coherence ....')
+        for b in np.ndenumerate(b_vector):
+            #print(int(np.round(100*(b[1]*self.dt)/(self.npts*self.dt), decimals=0)), '%')
             
+            # selection of samples
+            for c in np.ndenumerate(c_vector):
+                
+                # selection of samples
+                dat_win = sample_select(ns_window, self.traces, dat_win, y, a, b[1], c[1], d_static)
+                sem[c[0],b[0]] = self.__semblance_func(dat_win)
+                sem2[c[0],b[0]] = self.__svd(dat_win) if svd==True else None
+        
+        return sem, sem2
+    
+    
+    def x_search(self, d_vector, sem, sem2, sem_matrix, b_vector, c_vector, ns_window, dat_win, y, a, d_static, svd=False):
+        
+        for d in np.ndenumerate(d_vector):
+                
+            print(int(np.round(100*d[1]/(d_vector.max()), decimals=1)), '%')
+            
+            sem, sem2 = self.b_c_iter(sem, sem2, b_vector, c_vector, ns_window, dat_win, y, a, d[1], svd)
+                    
+            sem2 = sem2/sem2.max() # normalized between 0 and 1 to scale sem matrix
+        
+        
+            if svd==False:
+                sem_matrix = np.dstack((sem_matrix, sem))
+            else:
+                sem_matrix = np.dstack((sem_matrix, sem*sem2))
 
+        return sem_matrix
+    
+     
     def detector(self,
                   ns_window,
                   a,
@@ -139,32 +213,23 @@ class Detector(DAS.DAS):
         
         y = np.arange(self.ntrs)
         
+        self.b_step = b_step
         c_vector = np.arange(c_min, c_max+c_step, c_step)
         self.curv = c_vector
         b_vector = np.arange(0, self.npts, b_step) - a
     
         dat_win = np.zeros((self.ntrs, ns_window))
-       
+                        
         sem = np.zeros((len(c_vector), len(b_vector)))
         sem2 = sem.copy()
         sem_matrix = np.zeros((len(c_vector), len(b_vector)))
         
+               
         ##############----- PERFORM SCANNING -------------#########
         
         if lat_search == False and d_static is not None:
-            
-            for b in np.ndenumerate(b_vector):
-                print(int(np.round(100*(b[1]*self.dt)/(self.npts*self.dt), decimals=0)), '%')
-                
-                # selection of samples
-                for c in np.ndenumerate(c_vector):
-                    
-                    # selection of samples
-                    dat_win = sample_select(ns_window, self.traces, dat_win, y, a, b[1], c[1], d_static)
-                    sem[c[0],b[0]] = semblance_func(dat_win)
-                    sem2[c[0],b[0]] = self.__svd(dat_win) if svd==True else None
-                    
-            
+            sem, sem2 = self.b_c_iter(sem, sem2, b_vector, c_vector, ns_window, dat_win, y, a, d_static, svd=False)
+                        
             sem2 = sem2/sem2.max() # svd weight normalized between 0 and 1 to scale sem matrix
             sem = sem*sem2 if svd==True else sem
             
@@ -179,25 +244,31 @@ class Detector(DAS.DAS):
             
             d_vector = np.arange(d_min, d_max+d_step, d_step)
             
-            for d in np.ndenumerate(d_vector):
-                print(int(np.round(100*d[1]/(d_vector.max()), decimals=1)), '%')
-                
-                for b in np.ndenumerate(b_vector):
-                    
-                    for c in np.ndenumerate(c_vector):
-                        
-                        dat_win = sample_select(ns_window, self.traces, dat_win, y, a, b[1], c[1], d[1])
-                        sem[c[0],b[0]] = semblance_func(dat_win)
-                        sem2[c[0],b[0]] = self.__svd(dat_win) if svd==True else None
-                        
-                        
-                sem2 = sem2/sem2.max() # normalized between 0 and 1 to scale sem matrix
-
+            #args = [d_vector, sem, sem2, sem_matrix, b_vector, c_vector, ns_window, dat_win, y, a, d_static, svd]
             
-                if svd==False:
-                    sem_matrix = np.dstack((sem_matrix, sem))
-                else:
-                    sem_matrix = np.dstack((sem_matrix, sem*sem2))
+            #import multiprocessing
+            #with multiprocessing.Pool(processes=4) as pool:
+            #    sem_matrix = pool.starmap(self.x_search, args)
+            
+            # import multiprocessing
+            # with multiprocessing.Pool(processes=4) as pool:
+            #     sem_matrix = pool.apply_async(self.x_search,
+            #                                   args=(d_vector,
+            #                                         sem,
+            #                                         sem2,
+            #                                         sem_matrix,
+            #                                         b_vector,
+            #                                         c_vector,
+            #                                         ns_window,
+            #                                         dat_win,
+            #                                         y,
+            #                                         a,
+            #                                         d_static,
+            #                                         svd))
+            
+            # parallelize this function
+            sem_matrix = self.x_search(d_vector, sem, sem2, sem_matrix, b_vector, c_vector, ns_window, dat_win, y, a, d_static, svd)
+            
                     
             sem_matrix = sem_matrix[:,:,1:]
             d_position = np.where(sem_matrix == np.max(sem_matrix))[2]
@@ -209,7 +280,109 @@ class Detector(DAS.DAS):
         
         #####################################################
         
-    def plot(self, data, tini, tend, filename, db, path_results='./report/', savefig=False):
+
+    # def detector(self,
+    #               ns_window,
+    #               a,
+    #               b_step,
+    #               c_min, c_max, c_step,
+    #               d_static=None, d_min=None, d_max=None, d_step=None,
+    #               shift=0, svd=False, lat_search=False):
+        
+        
+        
+    #     int(ns_window)+1 if int(ns_window)%2 != 0 else int(ns_window)
+        
+    #     y = np.arange(self.ntrs)
+    #     self.b_step = b_step
+    #     c_vector = np.arange(c_min, c_max+c_step, c_step)
+    #     self.curv = c_vector
+    #     b_vector = np.arange(0, self.npts, b_step) - a
+    
+    #     dat_win = np.zeros((self.ntrs, ns_window))
+       
+    #     sem = np.zeros((len(c_vector), len(b_vector)))
+    #     sem2 = sem.copy()
+    #     sem_matrix = np.zeros((len(c_vector), len(b_vector)))
+        
+    #     ##############----- PERFORM SCANNING -------------#########
+        
+    #     if lat_search == False and d_static is not None:
+            
+    #         for b in np.ndenumerate(b_vector):
+    #             print(int(np.round(100*(b[1]*self.dt)/(self.npts*self.dt), decimals=0)), '%')
+                
+    #             # selection of samples
+    #             for c in np.ndenumerate(c_vector):
+                    
+    #                 # selection of samples
+    #                 dat_win = sample_select(ns_window, self.traces, dat_win, y, a, b[1], c[1], d_static)
+    #                 sem[c[0],b[0]] = semblance_func(dat_win)
+    #                 sem2[c[0],b[0]] = self.__svd(dat_win) if svd==True else None
+                                        
+            
+    #         sem2 = sem2/sem2.max() # svd weight normalized between 0 and 1 to scale sem matrix
+    #         sem = sem*sem2 if svd==True else sem
+            
+    #     elif lat_search == False and d_static is None:
+    #         raise Exception('Must enter a value for d_static')
+        
+        
+    #     elif lat_search == True:
+            
+    #         if d_min == None and d_max == None and d_step == None:
+    #             d_min, d_max, d_step = 0, int(self.ntrs * self.dx), int(self.ntrs/10)
+            
+    #         d_vector = np.arange(d_min, d_max+d_step, d_step)
+            
+    #         for d in np.ndenumerate(d_vector):
+    #             print(int(np.round(100*d[1]/(d_vector.max()), decimals=1)), '%')
+                
+    #             for b in np.ndenumerate(b_vector):
+                    
+    #                 for c in np.ndenumerate(c_vector):
+                        
+    #                     dat_win = sample_select(ns_window, self.traces, dat_win, y, a, b[1], c[1], d[1])
+    #                     sem[c[0],b[0]] = semblance_func(dat_win)
+    #                     sem2[c[0],b[0]] = self.__svd(dat_win) if svd==True else None
+                        
+                        
+    #             sem2 = sem2/sem2.max() # normalized between 0 and 1 to scale sem matrix
+
+            
+    #             if svd==False:
+    #                 sem_matrix = np.dstack((sem_matrix, sem))
+    #             else:
+    #                 sem_matrix = np.dstack((sem_matrix, sem*sem2))
+                    
+    #         sem_matrix = sem_matrix[:,:,1:]
+    #         d_position = np.where(sem_matrix == np.max(sem_matrix))[2]
+    #         self.d_best = d_vector[d_position[0]]
+    #         sem = sem_matrix[:,:,d_position]
+                    
+    #     self.sem_matrix = sem_matrix
+    #     self.sem = sem
+        
+    #     #####################################################
+
+    def plot_report(self, path_results='./report/', savefig=False, fig_format='png'):
+        '''
+        
+
+        Parameters
+        ----------
+        path_results : String, optional
+            Path where to store the results. The default is './report/'.
+        savefig : Boolean, optional
+            Set it to True if you want to save the figure. The default is False.
+        fig_format : String, optional
+            Format in which to save the figure. The default is png.
+
+        Returns
+        -------
+        A matplotlib plot with the results of the detector
+
+        '''
         
         width = 15/2.54
         fontsize = 10
@@ -221,7 +394,7 @@ class Detector(DAS.DAS):
         
         cut = 3 # remove the last 3 columns of the semblance which are not properly computed for every scanning
 
-        time = np.arange(self.npts-(db*cut))*self.dt
+        time = np.arange(self.npts-(self.b_step*cut))*self.dt
         coh_vector, threshold = self.coh, self.threshold 
         
         time_tmp = np.linspace(time.min(), time.max(), len(coh_vector))
@@ -252,7 +425,11 @@ class Detector(DAS.DAS):
                 
         ## AX3 ##
         
-        im3 = ax3.imshow(data[:,:-cut*db],extent=[min(time),max(time),max(depth),min(depth)],cmap='seismic',aspect='auto')
+        im3 = ax3.imshow(self.traces[:,:-cut*self.b_step],
+                         extent=[min(time), max(time), max(depth), min(depth)],
+                         cmap='seismic',
+                         aspect='auto')
+        
         ax3.set_ylabel('Linear Fiber Length [m]', fontsize=fontsize)
         ax3.set_xlabel('Relative time [s]', fontsize=fontsize)
         
@@ -263,11 +440,9 @@ class Detector(DAS.DAS):
 
         fig.tight_layout()
   
-        
-        if savefig!=False:
-            plt.savefig(path_results+filename+'.eps', dpi=300)
-            plt.savefig(path_results+filename+'.png', dpi=300)
-            
+        if savefig is True:
+            plt.savefig(path_results + self.fname + '_detection_plot.' + fig_format, dpi=300)
+                        
             del fig, ax1, ax2, ax3, coh_vector, threshold, events_clean
         
 
